@@ -179,7 +179,6 @@ typedef struct
 	WORD	type:4;
 } IMAGE_RELOC, *PIMAGE_RELOC;
 
-
 HookContext g_hook;
 
 ApiContext g_ApiTable[]={
@@ -587,6 +586,7 @@ loader 重定位
   */
   void LoadPE(wchar_t *pFile,wchar_t *pCommandLine)
   {
+      HANDLE hKernel32 = NULL;
 	  HANDLE	hFile = NULL;
 	  HANDLE  hMap = NULL;
 	  DWORD	dwSize;
@@ -720,7 +720,7 @@ SIN:
 	  }
 	  if(!dwMapBase)
 		  dwMapBase = (DWORD) VirtualAlloc((LPVOID) pNtHeaders->OptionalHeader.ImageBase,pNtHeaders->OptionalHeader.SizeOfImage + 1,
-		  MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+          MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
 	  if(!dwMapBase)
 	  {
 		  if(pNtHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size)
@@ -728,7 +728,7 @@ SIN:
 			  DMSG("Alloc memery failed,try to reloc it \n");
 			  dwMapBase = (DWORD) VirtualAlloc(NULL, 
 				  pNtHeaders->OptionalHeader.SizeOfImage + 1,
-				  MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+				  MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
 		  }
 		  else
 			  printf("Failed to allocate PE ImageBase: 0x%08x,No reloc infomation \n",pNtHeaders->OptionalHeader.ImageBase);
@@ -774,15 +774,19 @@ SIN:
 	  ProcessRelocations(dwMapBase);
 	  dwEP = dwMapBase + pNtHeaders->OptionalHeader.AddressOfEntryPoint;
 	  DMSG("Executing Entry Point: 0x%08x\n", dwEP);
-      __asm int 3
-	  pOrgiCommandline = *(DWORD **)((BYTE *)GetProcAddress(GetModuleHandleA("kernel32"),"GetCommandLineW")+1);  // windows 7 上不能这么搞
+
+      hKernel32 = GetModuleHandleA("KernelBase.dll");  //兼容 windows 7
+      if(NULL == hKernel32)
+          hKernel32 = GetModuleHandleA("kernel32");
+      //__asm int 3
+      pOrgiCommandline = *(DWORD **)((BYTE *)GetProcAddress((HMODULE)hKernel32,"GetCommandLineW")+1);  // windows 7 上不能这么搞
 	  //if(dwMyNewBase)
 	  //{
 	  //	  pCommandLine = (wchar_t *)(dwMyNewBase + (DWORD)pCommandLine - dwMyBase);
 	  //}
 	  *pOrgiCommandline = (DWORD)wcsdup(pCommandLine);
 	  //还要 patch 下 GetCommandLineA
-	  pOrgiCommandline = *(DWORD **)((BYTE *)GetProcAddress(GetModuleHandleA("kernel32"),"GetCommandLineA")+1);  // windows 7 上不能这么搞
+      pOrgiCommandline = *(DWORD **)((BYTE *)GetProcAddress((HMODULE)hKernel32,"GetCommandLineA")+1);  // windows 7 上不能这么搞
 	  //if(dwMyNewBase)  命令行参数的地址放到堆中 就不需要重定位了
  	  //{
 	  //	  pCommandLine = (CHAR *)(dwMyNewBase + (DWORD)pCommandLine - dwMyBase);
@@ -814,11 +818,12 @@ SIN:
 		  __asm 
 		  {
 			  mov eax,dword ptr fs:[0x18]//设置imagebase
-				  mov eax,dword ptr ds:[eax+0x30]
-				  mov ebx,dwMapBase
-				  mov [eax+0x8],ebx
-				  mov eax, dwEP
-				  call eax
+			  mov eax,dword ptr ds:[eax+0x30]
+		      mov ebx,dwMapBase
+		      mov [eax+0x8],ebx
+		      mov eax, dwEP
+              //__asm int 3
+			  call eax
 		  }
 	  }
 	  ExitProcess(-1);
@@ -969,6 +974,7 @@ int __cdecl wmain(int argc, WCHAR* argv[])
 	g_hook.orig_func = GetProcAddress(GetModuleHandleA("ntdll.dll"),"LdrGetProcedureAddress");
 	g_hook.OpcodeLen = 0;
 	
+    MakeMemWriteable(&g_hook,sizeof(g_hook));
 	bt_hook_Hook(&g_hook);
 	
 	WCHAR *cmd = SkipFirstCmd();
